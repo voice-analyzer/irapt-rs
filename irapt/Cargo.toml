@@ -1,0 +1,12 @@
+[package]
+name = "irapt"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+itertools = { version = "0.10", default-features = false }
+num = "0.4"
+rustfft = "6.0"
+
+[dev-dependencies]
+csv = "1.1"
