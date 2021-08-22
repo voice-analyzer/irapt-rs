@@ -6,6 +6,7 @@ use core::ops::RangeInclusive;
 use num::Complex;
 use rustfft::{Fft, FftPlanner};
 
+use crate::error::InvalidParameterError;
 use crate::harmonics::HarmonicParameter;
 use crate::interpolate::InterpolationFilter;
 
@@ -25,22 +26,30 @@ impl CandidateGenerator {
         interpolation_factor: u8,
         sample_rate: f64,
         pitch_range: RangeInclusive<f64>,
-    ) -> Self {
+    ) -> Result<Self, InvalidParameterError> {
+        let min_pitch_index = (sample_rate / pitch_range.end()).floor() as usize;
+        let max_pitch_index = (sample_rate / pitch_range.start()).ceil() as usize;
+
+        let max_half_interpolation_window_len = usize::min(min_pitch_index, fft_len - max_pitch_index) as u32;
+        if half_interpolation_window_len > max_half_interpolation_window_len {
+            return Err(InvalidParameterError::InterpolationWindowTooLong {
+                max_length: max_half_interpolation_window_len,
+            });
+        }
+
         let ifft = FftPlanner::new().plan_fft_inverse(fft_len);
         let ifft_buffer = vec![<_>::default(); ifft.len()].into();
         let ifft_scratch = vec![<_>::default(); ifft.get_inplace_scratch_len()].into();
         let interpolator = InterpolationFilter::new(half_interpolation_window_len, interpolation_factor);
-        let min_pitch_index = (sample_rate / pitch_range.end()).floor() as usize;
-        let max_pitch_index = (sample_rate / pitch_range.start()).ceil() as usize;
         let window_len = (max_pitch_index - min_pitch_index) * usize::from(interpolation_factor) + 1;
-        Self {
+        Ok(Self {
             ifft,
             ifft_buffer,
             ifft_scratch,
             pitch_range: min_pitch_index..=max_pitch_index,
             interpolator,
             window_len,
-        }
+        })
     }
 
     pub fn candidate_frequency(&self, index: usize, sample_rate: f64) -> f64 {

@@ -6,6 +6,7 @@ extern crate alloc;
 mod util;
 
 pub mod candidates;
+pub mod error;
 pub mod fir_filter;
 pub mod harmonics;
 pub mod interpolate;
@@ -13,6 +14,7 @@ pub mod polyphase_filter;
 
 use self::candidates::CandidateGenerator;
 use self::candidates::CandidateSelector;
+use self::error::InvalidParameterError;
 use self::harmonics::HarmonicParametersEstimator;
 
 use alloc::collections::VecDeque;
@@ -26,17 +28,42 @@ pub struct Irapt {
 }
 
 pub struct Parameters {
+    /// The constant sample rate the input was sampled with.
     pub sample_rate: f64,
 
     pub harmonics_estimation_interval:        f64,
     pub harmonics_estimation_window_duration: f64,
     pub candidate_selection_window_duration:  f64,
 
+    /// Frequency range (in Hz) within which to detect pitch.
+    ///
+    /// Wider frequency ranges require a larger [`candidate_generator_fft_len`] or [`sample_rate`] to maintain adequate
+    /// frequency resolution of pitch detection.
+    ///
+    /// [`candidate_generator_fft_len`]: Self::candidate_generator_fft_len
+    /// [`sample_rate`]: Self::sample_rate
     pub pitch_range: RangeInclusive<f64>,
 
-    pub candidate_generator_fft_len:   usize,
+    /// Size of the FFT used for candidate generation.
+    ///
+    /// The candidate generation FFT size affects the frequency resolution of pitch detection. Larger FFT sizes result
+    /// in a higher resolution.
+    ///
+    /// Certain FFT sizes, e.g. powers of two, are more computationally efficient than others. See the
+    /// [`rustfft`] crate for the supported optimizations based on FFT size.
+    ///
+    /// [`rustfft`]: https://docs.rs/rustfft
+    pub candidate_generator_fft_len: usize,
+
+    /// Half-length of the window of the interpolator used on generated pitch candidates.
+    ///
+    /// The window half-length must be less than or equal to both:
+    ///
+    ///  * `(sample_rate / pitch_range.end()).floor()`, and
+    ///  * `candidate_generator_fft_len - (sample_rate / pitch_range.start()).ceil()`
     pub half_interpolation_window_len: u32,
-    pub interpolation_factor:          u8,
+
+    pub interpolation_factor: u8,
 
     pub candidate_step_decay: f64,
     pub candidate_max_jump:   usize,
@@ -48,7 +75,7 @@ pub struct EstimatedPitch {
 }
 
 impl Irapt {
-    pub fn new(parameters: Parameters) -> Self {
+    pub fn new(parameters: Parameters) -> Result<Self, InvalidParameterError> {
         let estimator = HarmonicParametersEstimator::new(parameters.harmonics_window_len());
 
         let candidate_generator = CandidateGenerator::new(
@@ -57,14 +84,14 @@ impl Irapt {
             parameters.interpolation_factor,
             parameters.sample_rate,
             parameters.pitch_range.clone(),
-        );
+        )?;
         let candidate_selector = CandidateSelector::new(parameters.candidate_selection_window_len(), candidate_generator.window_len());
-        Self {
+        Ok(Self {
             parameters,
             estimator,
             candidate_generator,
             candidate_selector,
-        }
+        })
     }
 
     pub fn process<S: Into<f64> + Copy>(&mut self, samples: &mut VecDeque<S>) -> Option<EstimatedPitch> {
