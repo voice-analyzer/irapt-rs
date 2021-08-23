@@ -1,3 +1,5 @@
+//! Error types returned by `irapt`.
+
 /// An error returned when the supplied [`Parameters`](crate::Parameters) are invalid or conflict with each other.
 #[derive(Clone, Debug)]
 #[non_exhaustive]

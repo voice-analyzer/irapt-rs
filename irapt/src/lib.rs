@@ -1,15 +1,60 @@
 #![no_std]
+#![warn(missing_docs)]
+
+//! `irapt` is an implementation of the IRAPT pitch estimation algorithm.
+//!
+//! IRAPT is an "instantaneous" version of the Robust Algorithm for Pitch Tracking (RAPT).
+//!
+//! # Usage
+//!
+//! Currently, the [parameters](Parameters) to [`Irapt`] are technical and may be difficult to tune, but the
+//! [`Parameters::default`] provides a sensible set of defaults for ordinary human speech which is computationally
+//! efficient, given the input can be resampled to the default [`Parameters::sample_rate`].
+//!
+//! The input must be given as a [`VecDeque`] to [`Irapt::process`] which is to facilitate the sliding analysis window.
+//! The number of samples removed from the buffer by `process` can be calculated on each invocation in order to track
+//! the global sample index at which each pitch is estimated:
+//!
+//! ```
+//! use irapt::{Irapt, Parameters};
+//! use std::collections::VecDeque;
+//! use std::f64::consts::PI;
+//!
+//! let parameters = Parameters::default();
+//! let mut irapt = Irapt::new(parameters.clone()).expect("the default parameters should be valid");
+//!
+//! let mut sample_buffer = (0..parameters.sample_rate as usize)
+//!     .map(|sample_index| f64::sin(sample_index as f64 / parameters.sample_rate * 2.0 * PI * 100.0))
+//!     .collect::<VecDeque<_>>();
+//!
+//! let mut sample_index = 0;
+//! while let (initial_sample_buffer_len, Some(estimated_pitch)) = (
+//!     sample_buffer.len(),
+//!     irapt.process(&mut sample_buffer),
+//! ) {
+//!     let estimated_pitch_index = sample_index + estimated_pitch.index;
+//!     let estimated_pitch_time = estimated_pitch_index as f64 / parameters.sample_rate;
+//!     println!("estimated pitch at {:0.3}: {}Hz with energy {}",
+//!              estimated_pitch_time, estimated_pitch.frequency, estimated_pitch.energy);
+//!     sample_index += initial_sample_buffer_len - sample_buffer.len();
+//! }
+//! ```
 
 extern crate alloc;
 
 #[macro_use]
 mod util;
 
+#[doc(hidden)]
 pub mod candidates;
 pub mod error;
+#[doc(hidden)]
 pub mod fir_filter;
+#[doc(hidden)]
 pub mod harmonics;
+#[doc(hidden)]
 pub mod interpolate;
+#[doc(hidden)]
 pub mod polyphase_filter;
 
 use self::candidates::CandidateGenerator;
