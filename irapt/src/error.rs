@@ -1,4 +1,4 @@
-/// An error returned when the supplied [`Parameters`](crate::Parameters) are invalid.
+/// An error returned when the supplied [`Parameters`](crate::Parameters) are invalid or conflict with each other.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum InvalidParameterError {

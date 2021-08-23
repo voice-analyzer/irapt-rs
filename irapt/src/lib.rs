@@ -20,6 +20,15 @@ use self::harmonics::HarmonicParametersEstimator;
 use alloc::collections::VecDeque;
 use core::ops::RangeInclusive;
 
+/// Implementation of the IRAPT pitch estimation algorithm.
+///
+/// IRAPT is an "instantaneous" version of the Robust Algorithm for Pitch Tracking. Though pitch estimates are provided
+/// every [`harmonics_estimation_interval`] (`0.005` seconds by default), a larger sliding window of
+/// [`candidate_selection_window_duration`] (`0.3` seconds by default) is used to improve accuracy at the cost of a
+/// small delay.
+///
+/// [`harmonics_estimation_interval`]: Parameters::harmonics_estimation_interval
+/// [`candidate_selection_window_duration`]: Parameters::candidate_selection_window_duration
 pub struct Irapt {
     parameters:          Parameters,
     estimator:           HarmonicParametersEstimator,
@@ -27,18 +36,37 @@ pub struct Irapt {
     candidate_selector:  CandidateSelector,
 }
 
+/// Various tunable parameters for [`Irapt`].
+///
+/// The [`Default`] implementation provides suggested defaults for all parameters, given that the input is resampled
+/// near to the suggested default sample rate.
+#[derive(Clone, Debug)]
 pub struct Parameters {
-    /// The constant sample rate the input was sampled with.
+    /// The constant sample rate, in Hz, the input was sampled with.
+    ///
+    /// The suggested default is `6000.0`.
     pub sample_rate: f64,
 
-    pub harmonics_estimation_interval:        f64,
-    pub harmonics_estimation_window_duration: f64,
-    pub candidate_selection_window_duration:  f64,
+    /// Interval, in seconds, at which harmonics of the input are estimated.
+    ///
+    /// The suggested default is `0.005`.
+    pub harmonics_estimation_interval: f64,
 
-    /// Frequency range (in Hz) within which to detect pitch.
+    /// Duration, in seconds, of the sliding window upon which harmonics of the input are estimated.
+    ///
+    /// The suggested default is `0.05`.
+    pub harmonics_estimation_window_duration: f64,
+
+    /// Duration, in seconds, of the sliding window upon which pitches are estimated.
+    ///
+    /// A shorter candidate selection window will be more responsive to fluctuations in input, but less accurate. The
+    /// suggested default is `0.3`.
+    pub candidate_selection_window_duration: f64,
+
+    /// Frequency range, in Hz, within which to detect pitch.
     ///
     /// Wider frequency ranges require a larger [`candidate_generator_fft_len`] or [`sample_rate`] to maintain adequate
-    /// frequency resolution of pitch detection.
+    /// frequency resolution of pitch detection. The suggested default for any human speech is `50.0..=450.0`.
     ///
     /// [`candidate_generator_fft_len`]: Self::candidate_generator_fft_len
     /// [`sample_rate`]: Self::sample_rate
@@ -47,7 +75,7 @@ pub struct Parameters {
     /// Size of the FFT used for candidate generation.
     ///
     /// The candidate generation FFT size affects the frequency resolution of pitch detection. Larger FFT sizes result
-    /// in a higher resolution.
+    /// in a higher resolution. The suggested default is `16384`.
     ///
     /// Certain FFT sizes, e.g. powers of two, are more computationally efficient than others. See the
     /// [`rustfft`] crate for the supported optimizations based on FFT size.
@@ -57,24 +85,61 @@ pub struct Parameters {
 
     /// Half-length of the window of the interpolator used on generated pitch candidates.
     ///
+    /// A window too short for the given [`candidate_generator_fft_len`] will suffer from artifacts resulting from poor
+    /// interpolation. The suggested default is `12`.
+    ///
     /// The window half-length must be less than or equal to both:
     ///
     ///  * `(sample_rate / pitch_range.end()).floor()`, and
     ///  * `candidate_generator_fft_len - (sample_rate / pitch_range.start()).ceil()`
+    ///
+    /// [`candidate_generator_fft_len`]: Self::candidate_generator_fft_len
     pub half_interpolation_window_len: u32,
 
+    /// Number of pitch candidates to interpolate in between each generated pitch candidate.
+    ///
+    /// The suggested default in `2`.
     pub interpolation_factor: u8,
 
+    /// Decay factor applied to candidates at each time step within the given [`candidate_selection_window_duration`].
+    ///
+    /// The suggested default is `0.95`.
+    ///
+    /// [`candidate_selection_window_duration`]: Self::candidate_selection_window_duration
     pub candidate_step_decay: f64,
-    pub candidate_max_jump:   usize,
+
+    /// Assumed maximum distance a valid pitch will change within the [`harmonics_estimation_interval`].
+    ///
+    /// The unit of distance is in candidates, which is an arbitrary logarithmic frequency scale.
+    ///
+    /// [`harmonics_estimation_interval`]: Self::harmonics_estimation_interval
+    pub candidate_max_jump: usize,
 }
 
+/// Estimate of the current pitch of the input.
 pub struct EstimatedPitch {
+    /// Frequency, in Hz, of the estimated pitch.
     pub frequency: f64,
-    pub energy:    f64,
+    /// Arbitrary measure, from `0.0..=1.0`, of the energy associated with the estimated pitch.
+    pub energy: f64,
+    /// The index within the input buffer (_before_ removal of consumed samples) at which this pitch was estimated.
+    pub index: usize,
 }
 
 impl Irapt {
+    /// Constructs a new `Irapt`.
+    ///
+    /// # Errors
+    ///
+    /// If any of the supplied parameters are invalid or conflict with each other, then an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use irapt::{Irapt, Parameters};
+    ///
+    /// let mut irapt = Irapt::new(Parameters::default()).expect("the default parameters should be valid");
+    /// ```
     pub fn new(parameters: Parameters) -> Result<Self, InvalidParameterError> {
         let estimator = HarmonicParametersEstimator::new(parameters.harmonics_window_len());
 
@@ -94,6 +159,41 @@ impl Irapt {
         })
     }
 
+    /// Process input from a queue of samples in a [`VecDeque`].
+    ///
+    /// As many samples as necessary to calculate the next pitch estimate are read from the [`VecDeque`], otherwise
+    /// [`None`] is returned if more are required. To process as many samples as possible from the [`VecDeque`],
+    /// `process` should be called repeatedly until [`None`] is returned.
+    ///
+    /// Input samples consumed are eventually removed from the front of the [`VecDeque`] by `process`, but a fixed-size
+    /// window of past samples are left remaining in the [`VecDeque`] for access by later calls to `process` and are
+    /// only removed when they are no longer needed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use irapt::{Irapt, Parameters};
+    /// use std::collections::VecDeque;
+    /// use std::f64::consts::PI;
+    ///
+    /// let parameters = Parameters::default();
+    /// let mut irapt = Irapt::new(parameters.clone()).expect("the default parameters should be valid");
+    ///
+    /// let mut samples = (0..).map(|sample_index| f64::sin(sample_index as f64 / parameters.sample_rate * 2.0 * PI * 100.0));
+    /// let mut sample_buffer = VecDeque::new();
+    /// sample_buffer.extend(samples.by_ref().take(1800));
+    ///
+    /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
+    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    /// }
+    ///
+    /// // Process some more samples when they become available
+    /// sample_buffer.extend(samples.by_ref().take(1800));
+    ///
+    /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
+    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    /// }
+    /// ```
     pub fn process<S: Into<f64> + Copy>(&mut self, samples: &mut VecDeque<S>) -> Option<EstimatedPitch> {
         let step_len = self.parameters.step_len();
         while let Some(harmonics) = self.estimator.process_step(samples, step_len, self.parameters.sample_rate) {
@@ -133,7 +233,8 @@ impl Irapt {
 //
 
 impl Parameters {
-    const DEFAULT: Self = Self {
+    /// Suggested default parameters.
+    pub const DEFAULT: Self = Self {
         sample_rate: 6000.0,
 
         harmonics_estimation_interval:        0.005,
