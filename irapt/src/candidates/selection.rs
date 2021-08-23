@@ -61,6 +61,11 @@ impl CandidateSelector {
             })
         })
     }
+
+    pub fn reset(&mut self) {
+        self.steps.clear();
+        self.last_step_min_values.fill(0.0);
+    }
 }
 
 impl Step {

@@ -224,16 +224,20 @@ impl Irapt {
     /// let parameters = Parameters::default();
     /// let mut irapt = Irapt::new(parameters.clone()).expect("the default parameters should be valid");
     ///
+    /// // Use a 100Hz sine wave as an example input signal
     /// let mut samples = (0..).map(|sample_index| f64::sin(sample_index as f64 / parameters.sample_rate * 2.0 * PI * 100.0));
-    /// let mut sample_buffer = VecDeque::new();
-    /// sample_buffer.extend(samples.by_ref().take(1800));
     ///
+    /// // Collect half of a second of input
+    /// let mut sample_buffer = VecDeque::new();
+    /// sample_buffer.extend(samples.by_ref().take(parameters.sample_rate as usize / 2));
+    ///
+    /// // Process as many samples as possible
     /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
     ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
     /// }
     ///
-    /// // Process some more samples when they become available
-    /// sample_buffer.extend(samples.by_ref().take(1800));
+    /// // Simulate that half of a second more samples have become availoble and process them
+    /// sample_buffer.extend(samples.by_ref().take(parameters.sample_rate as usize / 2));
     ///
     /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
     ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
@@ -276,6 +280,49 @@ impl Irapt {
             }
         }
         None
+    }
+
+    /// Resets all internal state associated with the sliding analysis window.
+    ///
+    /// The internal state after a reset is equivalent to that of a newly constructed [`Irapt`]. Resetting can be useful
+    /// to avoid causing artifacts in the analysis when skipping a number of samples in the input without processing
+    /// them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use irapt::{Irapt, Parameters};
+    /// use std::collections::VecDeque;
+    /// use std::f64::consts::PI;
+    ///
+    /// let parameters = Parameters::default();
+    /// let mut irapt = Irapt::new(parameters.clone()).expect("the default parameters should be valid");
+    ///
+    /// // Use a 100Hz sine wave as an example input signal
+    /// let mut samples = (0..).map(|sample_index| f64::sin(sample_index as f64 / parameters.sample_rate * 2.0 * PI * 100.0));
+    ///
+    /// // Collect half of a second of input
+    /// let mut sample_buffer = VecDeque::new();
+    /// sample_buffer.extend(samples.by_ref().take(parameters.sample_rate as usize / 2));
+    ///
+    /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
+    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    /// }
+    ///
+    /// // Simulate that many more samples have become available
+    /// let more_samples = samples.by_ref().take(parameters.sample_rate as usize * 10);
+    ///
+    /// // Reset irapt, clear the input buffer, skip all but half a second of input samples, and process the rest
+    /// irapt.reset();
+    /// sample_buffer.clear();
+    /// sample_buffer.extend(more_samples.skip(parameters.sample_rate as usize * 19 / 2));
+    ///
+    /// while let Some(estimated_pitch) = irapt.process(&mut sample_buffer) {
+    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    /// }
+    /// ```
+    pub fn reset(&mut self) {
+        self.estimator.reset();
     }
 }
 

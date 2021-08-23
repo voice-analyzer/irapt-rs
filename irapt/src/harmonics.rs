@@ -70,6 +70,10 @@ impl HarmonicParametersEstimator {
 
         Some(harmonics)
     }
+
+    pub fn reset(&mut self) {
+        self.next_step = self.channel_buffers.0.len() + 1;
+    }
 }
 
 fn phase_diff(phase: f64, prev_phase: f64) -> f64 {
