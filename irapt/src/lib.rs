@@ -195,8 +195,12 @@ impl Irapt {
     /// }
     /// ```
     pub fn process<S: Into<f64> + Copy>(&mut self, samples: &mut VecDeque<S>) -> Option<EstimatedPitch> {
+        let initial_samples_len = samples.len();
         let step_len = self.parameters.step_len();
-        while let Some(harmonics) = self.estimator.process_step(samples, step_len, self.parameters.sample_rate) {
+        while let (step_samples_len, Some(harmonics)) = (
+            self.estimator.next_step_samples_len(),
+            self.estimator.process_step(samples, step_len, self.parameters.sample_rate),
+        ) {
             let mut energy = 0.0;
             let harmonics = harmonics.inspect(|harmonic| {
                 energy += harmonic.amplitude * harmonic.amplitude;
@@ -218,9 +222,11 @@ impl Irapt {
                 let candidate_frequency = self
                     .candidate_generator
                     .candidate_frequency(best_candidate_index, self.parameters.sample_rate);
+                let removed_samples_count = initial_samples_len - samples.len();
                 return Some(EstimatedPitch {
                     frequency: candidate_frequency,
-                    energy:    (-min_candidate / energy.max(1e-4)),
+                    energy: (-min_candidate / energy.max(1e-4)),
+                    index: step_samples_len + removed_samples_count,
                 });
             }
         }

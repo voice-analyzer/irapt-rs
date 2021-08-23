@@ -32,6 +32,10 @@ impl HarmonicParametersEstimator {
         }
     }
 
+    pub fn next_step_samples_len(&self) -> usize {
+        self.next_step
+    }
+
     pub fn process_step<S: Into<f64> + Copy>(
         &mut self,
         samples: &mut VecDeque<S>,
