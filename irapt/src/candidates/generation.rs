@@ -54,7 +54,7 @@ impl CandidateGenerator {
 
     pub fn candidate_frequency(&self, index: usize, sample_rate: f64) -> f64 {
         let pitch_range = self.pitch_range.end() - self.pitch_range.start();
-        let candidate_spacing = pitch_range as f64 / self.window_len() as f64;
+        let candidate_spacing = pitch_range as f64 / (self.window_len() - 1) as f64;
         sample_rate / (*self.pitch_range.start() as f64 + index as f64 * candidate_spacing)
     }
 

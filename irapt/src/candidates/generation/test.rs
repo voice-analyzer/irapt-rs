@@ -38,3 +38,18 @@ fn test_interpolation_window_too_long() {
         InvalidParameterError::InterpolationWindowTooLong { .. }
     );
 }
+
+#[test]
+fn test_candidate_frequency() {
+    let mut expected = parse_csv::<f64>(include_bytes!("test/candidate_frequency/frequencies.csv"));
+    let expected = expected.next().unwrap();
+
+    let sample_rate = 6000.0;
+
+    let candidate_generator = CandidateGenerator::new(16384, 12, 2, sample_rate, 50.0..=450.0).unwrap();
+
+    let candidate_frequencies = (0..candidate_generator.window_len())
+        .map(|candidate_index| candidate_generator.candidate_frequency(candidate_index, sample_rate));
+
+    assert_iter_approx_eq!(candidate_frequencies, expected, 1e-12);
+}
