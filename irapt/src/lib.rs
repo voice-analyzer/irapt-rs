@@ -146,6 +146,12 @@ pub struct Parameters {
     /// The suggested default in `2`.
     pub interpolation_factor: u8,
 
+    /// Taper factor applied to candidates within a time step.
+    ///
+    /// Candidates within a single time step will be weighted from `1.0 - candidate_taper..=1.0` linearly proportional
+    /// to their frequencies. The suggested default is `0.25`.
+    pub candidate_taper: f64,
+
     /// Decay factor applied to candidates at each time step within the given [`candidate_selection_window_duration`].
     ///
     /// The suggested default is `0.95`.
@@ -195,7 +201,11 @@ impl Irapt {
             parameters.sample_rate,
             parameters.pitch_range.clone(),
         )?;
-        let candidate_selector = CandidateSelector::new(parameters.candidate_selection_window_len(), candidate_generator.window_len());
+        let candidate_selector = CandidateSelector::new(
+            parameters.candidate_selection_window_len(),
+            parameters.candidate_taper,
+            candidate_generator.normalized_candidate_frequencies(parameters.sample_rate, parameters.pitch_range.clone()),
+        );
         Ok(Self {
             parameters,
             estimator,
@@ -270,7 +280,9 @@ impl Irapt {
             ) {
                 let candidate_frequency = self
                     .candidate_generator
-                    .candidate_frequency(best_candidate_index, self.parameters.sample_rate);
+                    .candidate_frequencies(self.parameters.sample_rate)
+                    .nth(best_candidate_index)
+                    .unwrap_or_else(|| panic!("candidate index out of bounds"));
                 let removed_samples_count = initial_samples_len - samples.len();
                 return Some(EstimatedPitch {
                     frequency: candidate_frequency,
@@ -345,6 +357,7 @@ impl Parameters {
         half_interpolation_window_len: 12,
         interpolation_factor:          2,
 
+        candidate_taper:      0.25,
         candidate_step_decay: 0.95,
         candidate_max_jump:   23,
     };

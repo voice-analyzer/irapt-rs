@@ -11,12 +11,12 @@ use crate::harmonics::HarmonicParameter;
 use crate::interpolate::InterpolationFilter;
 
 pub struct CandidateGenerator {
-    ifft:         Arc<dyn Fft<f64>>,
-    ifft_buffer:  Box<[Complex<f64>]>,
-    ifft_scratch: Box<[Complex<f64>]>,
-    pitch_range:  RangeInclusive<usize>,
-    interpolator: InterpolationFilter,
-    window_len:   usize,
+    ifft:              Arc<dyn Fft<f64>>,
+    ifft_buffer:       Box<[Complex<f64>]>,
+    ifft_scratch:      Box<[Complex<f64>]>,
+    pitch_index_range: RangeInclusive<usize>,
+    interpolator:      InterpolationFilter,
+    window_len:        usize,
 }
 
 impl CandidateGenerator {
@@ -46,20 +46,31 @@ impl CandidateGenerator {
             ifft,
             ifft_buffer,
             ifft_scratch,
-            pitch_range: min_pitch_index..=max_pitch_index,
+            pitch_index_range: min_pitch_index..=max_pitch_index,
             interpolator,
             window_len,
         })
     }
 
-    pub fn candidate_frequency(&self, index: usize, sample_rate: f64) -> f64 {
-        let pitch_range = self.pitch_range.end() - self.pitch_range.start();
-        let candidate_spacing = pitch_range as f64 / (self.window_len() - 1) as f64;
-        sample_rate / (*self.pitch_range.start() as f64 + index as f64 * candidate_spacing)
+    pub fn candidates_len(&self) -> usize {
+        self.window_len
     }
 
-    pub fn window_len(&self) -> usize {
-        self.window_len
+    pub fn candidate_frequencies(&self, sample_rate: f64) -> impl Iterator<Item = f64> + ExactSizeIterator + '_ {
+        let pitch_range = self.pitch_index_range.end() - self.pitch_index_range.start();
+        let candidate_spacing = pitch_range as f64 / (self.window_len - 1) as f64;
+        let pitch_range_start = *self.pitch_index_range.start() as f64;
+        (0..self.window_len).map(move |candidate_index| sample_rate / (pitch_range_start + candidate_index as f64 * candidate_spacing))
+    }
+
+    pub fn normalized_candidate_frequencies(
+        &self,
+        sample_rate: f64,
+        pitch_range: RangeInclusive<f64>,
+    ) -> impl Iterator<Item = f64> + ExactSizeIterator + '_ {
+        let pitch_range_width = pitch_range.end() - pitch_range.start();
+        self.candidate_frequencies(sample_rate)
+            .map(move |candidate_frequency| (candidate_frequency - pitch_range.start()) / pitch_range_width)
     }
 
     pub fn process_step(&mut self, harmonics: impl Iterator<Item = HarmonicParameter>, sample_rate: f64) -> impl Iterator<Item = f64> + '_ {
@@ -80,7 +91,7 @@ impl CandidateGenerator {
 
         let half_interpolation_window_len = self.interpolator.window_len() / 2;
         let pitches = self.ifft_buffer
-            [self.pitch_range.start() - half_interpolation_window_len..=self.pitch_range.end() + half_interpolation_window_len]
+            [self.pitch_index_range.start() - half_interpolation_window_len..=self.pitch_index_range.end() + half_interpolation_window_len]
             .iter()
             .map(move |pitch| pitch.re / 2.0);
 
