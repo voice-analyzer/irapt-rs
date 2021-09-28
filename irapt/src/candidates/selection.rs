@@ -17,15 +17,19 @@ struct Step {
 }
 
 impl CandidateSelector {
-    pub fn new(steps_per_window: usize, taper: f64, normalized_candidate_frequencies: impl Iterator<Item = f64> + ExactSizeIterator) -> Self {
+    pub fn new(
+        steps_per_window: usize,
+        taper: f64,
+        normalized_candidate_frequencies: impl Iterator<Item = f64> + ExactSizeIterator,
+    ) -> Self {
         let candidates_per_step = normalized_candidate_frequencies.len();
         let weights = normalized_candidate_frequencies
             .map(|normalized_frequency| 1.0 - (1.0 - normalized_frequency) * taper)
             .collect();
         Self {
-            steps:                VecDeque::with_capacity(steps_per_window),
+            steps: VecDeque::with_capacity(steps_per_window),
             last_step_min_values: vec![0.0; candidates_per_step].into(),
-            min_values_buffer:    vec![0.0; candidates_per_step].into(),
+            min_values_buffer: vec![0.0; candidates_per_step].into(),
             weights,
         }
     }

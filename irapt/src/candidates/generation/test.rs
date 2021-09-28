@@ -35,11 +35,15 @@ fn test_interpolation_window_too_long() {
     assert!(CandidateGenerator::new(16384, 12, 2, 6000.0, 6000.0 / (16384.0 - 12.0)..=6000.0 / 12.0).is_ok());
 
     assert_matches!(
-        CandidateGenerator::new(16384, 12, 2, 6000.0, 6000.0 / (16384.0 - 12.0)..=6000.0 / 11.0).err().unwrap(),
+        CandidateGenerator::new(16384, 12, 2, 6000.0, 6000.0 / (16384.0 - 12.0)..=6000.0 / 11.0)
+            .err()
+            .unwrap(),
         InvalidParameterError::InterpolationWindowTooLong { .. }
     );
     assert_matches!(
-        CandidateGenerator::new(16384, 12, 2, 6000.0, 6000.0 / (16384.0 - 11.0)..=6000.0 / 12.0).err().unwrap(),
+        CandidateGenerator::new(16384, 12, 2, 6000.0, 6000.0 / (16384.0 - 11.0)..=6000.0 / 12.0)
+            .err()
+            .unwrap(),
         InvalidParameterError::InterpolationWindowTooLong { .. }
     );
 }

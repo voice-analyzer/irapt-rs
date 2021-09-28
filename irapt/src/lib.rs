@@ -172,9 +172,9 @@ pub struct EstimatedPitch {
     /// Frequency, in Hz, of the estimated pitch.
     pub frequency: f64,
     /// Arbitrary measure, from `0.0..=1.0`, of the energy associated with the estimated pitch.
-    pub energy: f64,
+    pub energy:    f64,
     /// The index within the input buffer (_before_ removal of consumed samples) at which this pitch was estimated.
-    pub index: usize,
+    pub index:     usize,
 }
 
 impl Irapt {
@@ -286,8 +286,8 @@ impl Irapt {
                 let removed_samples_count = initial_samples_len - samples.len();
                 return Some(EstimatedPitch {
                     frequency: candidate_frequency,
-                    energy: (-min_candidate / energy.max(1e-4)),
-                    index: step_samples_len + removed_samples_count,
+                    energy:    (-min_candidate / energy.max(1e-4)),
+                    index:     step_samples_len + removed_samples_count,
                 });
             }
         }
