@@ -3,7 +3,7 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use core::mem;
 
-use itertools::{chain, izip};
+use itertools::{chain, zip};
 
 pub struct CandidateSelector {
     steps:                VecDeque<Step>,
@@ -44,16 +44,20 @@ impl CandidateSelector {
         let recycled_step = initialized.then(|| self.steps.pop_front()).flatten();
         let mut new_step = recycled_step.unwrap_or_else(|| Step::new(candidates_per_step));
 
-        let last_step_min_values_windows = windows_inexact(&*self.last_step_min_values, max_pitch_jump + 1, max_pitch_jump * 2 + 1);
-        let new_min_values = &mut *self.min_values_buffer;
-        let new_min_indices = &mut *new_step.min_indices;
-        for (last_step_min_values_window, candidate, weight, new_min_value, new_min_index) in
-            izip!(last_step_min_values_windows, candidates, &*self.weights, new_min_values, new_min_indices)
-        {
-            let (min_index, min_value) = min_candidate(last_step_min_values_window).unwrap_or_else(|| unreachable!());
-            *new_min_value = (candidate * weight + min_value) * decay;
+        let last_step_min_candidates = windows_inexact(&*self.last_step_min_values, max_pitch_jump + 1, max_pitch_jump * 2 + 1)
+            .map(min_candidate)
+            .map(|min_candidate| min_candidate.unwrap_or_else(|| unreachable!()));
+
+        let weighted_candidates = zip(candidates, &*self.weights).map(|(candidate, weight)| candidate * weight);
+
+        let min_candidates = zip(last_step_min_candidates, weighted_candidates)
+            .map(|((min_index, min_value), weighted_candidate)| (min_index, (min_value + weighted_candidate) * decay));
+
+        let new_min_candidates = zip(&mut *new_step.min_indices, &mut *self.min_values_buffer);
+        zip(new_min_candidates, min_candidates).for_each(|((new_min_index, new_min_value), (min_index, min_value))| {
             *new_min_index = min_index as u16;
-        }
+            *new_min_value = min_value;
+        });
 
         mem::swap(&mut self.min_values_buffer, &mut self.last_step_min_values);
         self.steps.push_back(new_step);
