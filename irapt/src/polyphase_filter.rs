@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
+use core::cell::Cell;
 use itertools::{chain, repeat_n, zip};
 use num::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -29,19 +30,12 @@ impl PolyphaseFilter {
     where I: IntoIterator<Item = f64> {
         let filter_pad_len = (channels.len() * 2 - self.filter.len() + 1) / 2;
         let filter = chain!(repeat_n(&0.0, filter_pad_len), &*self.filter);
+        let filtered_samples = zip(samples, filter).map(|(sample, filter)| sample * filter);
 
         channels.fill(Complex::new(0.0, 0.0));
-        let mut channels_iter = channels.iter_mut();
-        for (sample, filter) in zip(samples, filter) {
-            let channel = match channels_iter.next() {
-                Some(channel) => channel,
-                None => {
-                    channels_iter = channels.iter_mut();
-                    channels_iter.next().unwrap_or_else(|| unreachable!())
-                }
-            };
-            *channel += sample * filter;
-        }
+        let channels_cells = Cell::from_mut(channels).as_slice_of_cells();
+        let channels_cyclical_iter = channels_cells.iter().cycle();
+        zip(channels_cyclical_iter, filtered_samples).for_each(|(channel, filtered_sample)| channel.set(channel.get() + filtered_sample));
 
         self.ifft.process_with_scratch(channels, &mut self.ifft_scratch);
     }
