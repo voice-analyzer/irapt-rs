@@ -1,7 +1,13 @@
 [package]
 name = "irapt"
+description = "An implementation of the IRAPT pitch estimation algorithm"
 version = "0.1.0"
 edition = "2018"
+
+repository = "https://github.com/voice-analyzer/irapt-rs"
+license = "AGPL-3.0-only"
+categories = ["multimedia::audio"]
+keywords = ["audio", "pitch", "IRAPT"]
 
 [dependencies]
 itertools = { version = "0.10", default-features = false }
