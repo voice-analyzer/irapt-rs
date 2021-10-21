@@ -214,6 +214,11 @@ impl Irapt {
         })
     }
 
+    /// Returns the `Parameters` specified during construction.
+    pub fn parameters(&self) -> &Parameters {
+        &self.parameters
+    }
+
     /// Process input from a queue of samples in a [`VecDeque`].
     ///
     /// As many samples as necessary to calculate the next pitch estimate are read from the [`VecDeque`], otherwise
