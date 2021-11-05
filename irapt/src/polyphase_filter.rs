@@ -7,6 +7,7 @@ use num::Complex;
 use rustfft::{Fft, FftPlanner};
 
 use crate::fir_filter::{hamming, lowpass_fir_filter};
+use crate::util::iter::IteratorExt;
 
 pub struct PolyphaseFilter {
     filter:       Box<[f64]>,
@@ -34,8 +35,9 @@ impl PolyphaseFilter {
 
         channels.fill(Complex::new(0.0, 0.0));
         let channels_cells = Cell::from_mut(channels).as_slice_of_cells();
-        let channels_cyclical_iter = channels_cells.iter().cycle();
-        zip(channels_cyclical_iter, filtered_samples).for_each(|(channel, filtered_sample)| channel.set(channel.get() + filtered_sample));
+        let new_channels_cyclical =
+            zip(channels_cells.iter().cycle().copied_cell(), filtered_samples).map(|(channel, filtered_sample)| channel + filtered_sample);
+        channels_cells.iter().cycle().set_from(new_channels_cyclical);
 
         self.ifft.process_with_scratch(channels, &mut self.ifft_scratch);
     }
