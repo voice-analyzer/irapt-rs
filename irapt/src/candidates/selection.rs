@@ -7,10 +7,10 @@ use crate::util::iter::IteratorExt;
 use itertools::{chain, zip};
 
 pub struct CandidateSelector {
-    steps:                VecDeque<Step>,
-    last_step_min_values: Box<[f64]>,
-    min_values_buffer:    Box<[f64]>,
-    weights:              Box<[f64]>,
+    steps:               VecDeque<Step>,
+    last_step_min_costs: Box<[f64]>,
+    min_costs_buffer:    Box<[f64]>,
+    weights:             Box<[f64]>,
 }
 
 struct Step {
@@ -29,8 +29,8 @@ impl CandidateSelector {
             .collect();
         Self {
             steps: VecDeque::with_capacity(steps_per_window),
-            last_step_min_values: vec![0.0; candidates_per_step].into(),
-            min_values_buffer: vec![0.0; candidates_per_step].into(),
+            last_step_min_costs: vec![0.0; candidates_per_step].into(),
+            min_costs_buffer: vec![0.0; candidates_per_step].into(),
             weights,
         }
     }
@@ -42,30 +42,30 @@ impl CandidateSelector {
         max_pitch_jump: usize,
         decay: f64,
     ) -> Option<usize> {
-        let candidates_per_step = self.last_step_min_values.len();
+        let candidates_per_step = self.last_step_min_costs.len();
 
         let initialized = self.steps.len() == steps_per_window;
         let decay = initialized.then(|| decay).unwrap_or(1.0);
         let recycled_step = initialized.then(|| self.steps.pop_front()).flatten();
         let mut new_step = recycled_step.unwrap_or_else(|| Step::new(candidates_per_step));
 
-        let last_step_min_candidates = windows_inexact(&*self.last_step_min_values, max_pitch_jump + 1, max_pitch_jump * 2 + 1)
-            .map(min_candidate)
-            .map(|min_candidate| min_candidate.unwrap_or_else(|| unreachable!()));
+        // Calculate locally minimal candidate costs (within a window of size max_pitch_jump * 2) from the last time step.
+        let last_step_min_costs = min_candidate_costs(&*self.last_step_min_costs, max_pitch_jump);
 
+        // Apply pre-calculated weights to the candidates and add them to the best (minimal) candidates from the last time step.
         let weighted_candidates = zip(candidates, &*self.weights).map(|(candidate, weight)| candidate * weight);
+        let min_costs = zip(last_step_min_costs, weighted_candidates)
+            .map(|((min_index, min_cost), weighted_candidate)| (min_index, (min_cost + weighted_candidate) * decay));
 
-        let min_candidates = zip(last_step_min_candidates, weighted_candidates)
-            .map(|((min_index, min_value), weighted_candidate)| (min_index, (min_value + weighted_candidate) * decay));
-
-        zip(&mut *new_step.min_indices, &mut *self.min_values_buffer).set_from(min_candidates);
-        mem::swap(&mut self.min_values_buffer, &mut self.last_step_min_values);
+        // Save our calculations for later use by future time steps.
+        zip(&mut *new_step.min_indices, &mut *self.min_costs_buffer).set_from(min_costs);
+        mem::swap(&mut self.min_costs_buffer, &mut self.last_step_min_costs);
         self.steps.push_back(new_step);
         let initialized = self.steps.len() == steps_per_window;
 
         // follow trail of minimum indices through previous steps
         initialized.then(|| {
-            let (min_index, _) = min_candidate(&*self.last_step_min_values).unwrap_or_else(|| unreachable!());
+            let (min_index, _) = min_candidate_cost(&*self.last_step_min_costs).unwrap_or_else(|| unreachable!());
             self.steps.range(1..).rev().fold(min_index, |min_index, step| {
                 min_index.saturating_sub(max_pitch_jump) + step.min_indices[min_index] as usize
             })
@@ -74,7 +74,7 @@ impl CandidateSelector {
 
     pub fn reset(&mut self) {
         self.steps.clear();
-        self.last_step_min_values.fill(0.0);
+        self.last_step_min_costs.fill(0.0);
     }
 }
 
@@ -86,8 +86,16 @@ impl Step {
     }
 }
 
-fn min_candidate<'a, I: IntoIterator<Item = &'a f64>>(candidates: I) -> Option<(usize, f64)> {
-    candidates
+fn min_candidate_costs(candidate_costs: &[f64], max_pitch_jump: usize) -> impl Iterator<Item = (u16, f64)> + '_ {
+    // Calculate locally minimal candidate costs (within a window of size max_pitch_jump * 2) from the last time step.
+    windows_inexact(candidate_costs, max_pitch_jump + 1, max_pitch_jump * 2 + 1)
+        .map(min_candidate_cost)
+        .map(|min_candidate_cost| min_candidate_cost.unwrap_or_else(|| unreachable!()))
+        .map(|(min_index, min_cost)| (min_index as u16, min_cost))
+}
+
+fn min_candidate_cost<'a, I: IntoIterator<Item = &'a f64>>(candidate_costs: I) -> Option<(usize, f64)> {
+    candidate_costs
         .into_iter()
         .cloned()
         .enumerate()
