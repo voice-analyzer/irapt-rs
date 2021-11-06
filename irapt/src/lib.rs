@@ -340,6 +340,7 @@ impl Irapt {
     /// ```
     pub fn reset(&mut self) {
         self.estimator.reset();
+        self.candidate_selector.reset();
     }
 }
 
