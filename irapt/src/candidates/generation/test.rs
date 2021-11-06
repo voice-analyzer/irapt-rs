@@ -24,7 +24,8 @@ fn test_process_step() {
     let mut candidate_generator = test_process_step_candidate_generator();
 
     for (step_index, expected_step) in expected_steps.enumerate() {
-        let candidates = candidate_generator.process_step(harmonics.next().unwrap(), TEST_SAMPLE_RATE);
+        candidate_generator.process_step_harmonics(harmonics.next().unwrap(), TEST_SAMPLE_RATE);
+        let candidates = candidate_generator.generate_step_candidates();
         let candidates = candidates.collect::<Vec<_>>();
         assert_iter_approx_eq!(candidates, expected_step, 1e-7%, "step {}", step_index);
     }

@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::collections::VecDeque;
+use alloc::collections::{vec_deque, VecDeque};
 use alloc::vec;
 use core::mem;
 
@@ -13,8 +13,21 @@ pub struct CandidateSelector {
     weights:             Box<[f64]>,
 }
 
+pub struct CandidateSelection {
+    pub selected_candidate_index: usize,
+    pub energy: f64,
+}
+
+#[derive(Clone)]
+pub struct CandidateSelectionStepIter<'a> {
+    max_pitch_jump: usize,
+    steps: vec_deque::Iter<'a, Step>,
+    min_index: usize,
+}
+
 struct Step {
     min_indices: Box<[u16]>,
+    energy: f64,
 }
 
 impl CandidateSelector {
@@ -35,19 +48,30 @@ impl CandidateSelector {
         }
     }
 
+    pub fn initialized(&self, steps_per_window: usize) -> bool {
+        self.steps.len() == steps_per_window
+    }
+
     pub fn process_step(
         &mut self,
         candidates: impl Iterator<Item = f64>,
+        energy: f64,
         steps_per_window: usize,
         max_pitch_jump: usize,
         decay: f64,
-    ) -> Option<usize> {
+    ) {
         let candidates_per_step = self.last_step_min_costs.len();
 
         let initialized = self.steps.len() == steps_per_window;
         let decay = initialized.then(|| decay).unwrap_or(1.0);
         let recycled_step = initialized.then(|| self.steps.pop_front()).flatten();
         let mut new_step = recycled_step.unwrap_or_else(|| Step::new(candidates_per_step));
+
+        // Calculate the globally minimal candidate from the current time step to calculate the total energy later.
+        let mut min_candidate = f64::NAN;
+        let candidates = candidates.inspect(|candidate| {
+            min_candidate = candidate.min(min_candidate);
+        });
 
         // Calculate locally minimal candidate costs (within a window of size max_pitch_jump * 2) from the last time step.
         let last_step_min_costs = min_candidate_costs(&*self.last_step_min_costs, max_pitch_jump);
@@ -60,15 +84,22 @@ impl CandidateSelector {
         // Save our calculations for later use by future time steps.
         zip(&mut *new_step.min_indices, &mut *self.min_costs_buffer).set_from(min_costs);
         mem::swap(&mut self.min_costs_buffer, &mut self.last_step_min_costs);
-        self.steps.push_back(new_step);
-        let initialized = self.steps.len() == steps_per_window;
+        self.steps.push_back(Step {
+            min_indices: new_step.min_indices,
+            energy: -min_candidate / energy.max(1e-4),
+        });
+    }
 
+    pub fn best_candidate_steps(&self, steps_per_window: usize, max_pitch_jump: usize) -> Option<CandidateSelectionStepIter<'_>> {
         // follow trail of minimum indices through previous steps
-        initialized.then(|| {
+        let initialized = self.steps.len() == steps_per_window;
+        initialized.then(move || {
             let (min_index, _) = min_candidate_cost(&*self.last_step_min_costs).unwrap_or_else(|| unreachable!());
-            self.steps.range(1..).rev().fold(min_index, |min_index, step| {
-                min_index.saturating_sub(max_pitch_jump) + step.min_indices[min_index] as usize
-            })
+            CandidateSelectionStepIter {
+                max_pitch_jump,
+                steps: self.steps.range(1..),
+                min_index,
+            }
         })
     }
 
@@ -78,10 +109,30 @@ impl CandidateSelector {
     }
 }
 
+impl Iterator for CandidateSelectionStepIter<'_> {
+    type Item = CandidateSelection;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let step = self.steps.next_back()?;
+        self.min_index = self.min_index.saturating_sub(self.max_pitch_jump) + step.min_indices[self.min_index] as usize;
+        Some(CandidateSelection {
+            selected_candidate_index: self.min_index,
+            energy: step.energy,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.steps.size_hint()
+    }
+}
+
+impl ExactSizeIterator for CandidateSelectionStepIter<'_> {}
+
 impl Step {
     fn new(candidates_per_step: usize) -> Self {
         Self {
             min_indices: vec![0; candidates_per_step].into(),
+            energy: f64::NAN,
         }
     }
 }
@@ -122,6 +173,7 @@ mod test {
         let steps_per_window = 5;
         let max_pitch_jump = 23;
         let decay = 0.95;
+        let energy = 0.0;
 
         let generator = generation::test::test_process_step_candidate_generator();
         let normalized_candidate_frequencies =
@@ -135,7 +187,12 @@ mod test {
 
         let mut selector = CandidateSelector::new(steps_per_window, 0.25, normalized_candidate_frequencies);
         let best_candidate_indices = steps_candidates
-            .map(|step_candidates| selector.process_step(step_candidates, steps_per_window, max_pitch_jump, decay))
+            .map(|step_candidates| {
+                selector.process_step(step_candidates, energy, steps_per_window, max_pitch_jump, decay);
+                selector.best_candidate_steps(steps_per_window, max_pitch_jump)
+                        .and_then(|best_candidate_steps| best_candidate_steps.last())
+                        .map(|step_best_candidate| step_best_candidate.selected_candidate_index)
+            })
             .collect::<Vec<_>>();
         assert_eq!(best_candidate_indices, expected);
     }

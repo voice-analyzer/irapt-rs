@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
-use core::ops::RangeInclusive;
+use core::ops::{Range, RangeInclusive};
 
 use num::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -17,6 +17,14 @@ pub struct CandidateGenerator {
     pitch_index_range: RangeInclusive<usize>,
     interpolator:      InterpolationFilter,
     window_len:        usize,
+}
+
+#[derive(Clone)]
+pub struct CandidateFrequencyIter {
+    sample_rate: f64,
+    pitch_range_start: f64,
+    candidate_spacing: f64,
+    candidate_indices: Range<usize>,
 }
 
 impl CandidateGenerator {
@@ -56,11 +64,14 @@ impl CandidateGenerator {
         self.window_len
     }
 
-    pub fn candidate_frequencies(&self, sample_rate: f64) -> impl Iterator<Item = f64> + ExactSizeIterator + '_ {
+    pub fn candidate_frequencies(&self, sample_rate: f64) -> CandidateFrequencyIter {
         let pitch_range = self.pitch_index_range.end() - self.pitch_index_range.start();
-        let candidate_spacing = pitch_range as f64 / (self.window_len - 1) as f64;
-        let pitch_range_start = *self.pitch_index_range.start() as f64;
-        (0..self.window_len).map(move |candidate_index| sample_rate / (pitch_range_start + candidate_index as f64 * candidate_spacing))
+        CandidateFrequencyIter {
+            sample_rate,
+            candidate_spacing: pitch_range as f64 / (self.window_len - 1) as f64,
+            pitch_range_start: *self.pitch_index_range.start() as f64,
+            candidate_indices: 0..self.window_len,
+        }
     }
 
     pub fn normalized_candidate_frequencies(
@@ -73,7 +84,9 @@ impl CandidateGenerator {
             .map(move |candidate_frequency| (candidate_frequency - pitch_range.start()) / pitch_range_width)
     }
 
-    pub fn process_step(&mut self, harmonics: impl Iterator<Item = HarmonicParameter>, sample_rate: f64) -> impl Iterator<Item = f64> + '_ {
+    // process_step is split into two functions to work around overly-constrained lifetimes when returning impl Traits from a function with
+    // generic parameters.
+    pub fn process_step_harmonics(&mut self, harmonics: impl Iterator<Item = HarmonicParameter>, sample_rate: f64) {
         let ifft_order = self.ifft.len() as f64;
         let ifft_ratio = sample_rate / ifft_order;
         self.ifft_buffer.fill(<_>::default());
@@ -88,7 +101,9 @@ impl CandidateGenerator {
         }
 
         self.ifft.process_with_scratch(&mut self.ifft_buffer, &mut self.ifft_scratch);
+    }
 
+    pub fn generate_step_candidates(&mut self) -> impl Iterator<Item = f64> + '_ {
         let half_interpolation_window_len = self.interpolator.window_len() / 2;
         let pitches = self.ifft_buffer
             [self.pitch_index_range.start() - half_interpolation_window_len..=self.pitch_index_range.end() + half_interpolation_window_len]
@@ -97,6 +112,26 @@ impl CandidateGenerator {
 
         let interpolated = self.interpolator.interpolate(pitches);
         interpolated.map(|candidate| -candidate)
+    }
+}
+
+impl Iterator for CandidateFrequencyIter {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.sample_rate / (self.pitch_range_start + self.candidate_indices.next()? as f64 * self.candidate_spacing))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.candidate_indices.size_hint()
+    }
+}
+
+impl ExactSizeIterator for CandidateFrequencyIter {}
+
+impl DoubleEndedIterator for CandidateFrequencyIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        Some(self.sample_rate / (self.pitch_range_start + self.candidate_indices.next_back()? as f64 * self.candidate_spacing))
     }
 }
 
