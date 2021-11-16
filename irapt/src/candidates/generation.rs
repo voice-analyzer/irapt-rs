@@ -90,13 +90,21 @@ impl CandidateGenerator {
         let ifft_order = self.ifft.len() as f64;
         let ifft_ratio = sample_rate / ifft_order;
         self.ifft_buffer.fill(<_>::default());
+        let mut amplitude_square_sum = 0.0;
         for harmonic in harmonics.filter(|harmonic| (0.0..=sample_rate / 2.0).contains(&harmonic.frequency)) {
             // place at the closest corresponding positions of ±frequency in ifft_buffer
             let ifft_buffer_index = (harmonic.frequency / ifft_ratio).round() as usize;
-            let normalized_amplitude = harmonic.amplitude * harmonic.amplitude;
-            self.ifft_buffer[ifft_buffer_index] = normalized_amplitude.into();
+            let amplitude_square = harmonic.amplitude * harmonic.amplitude;
+            amplitude_square_sum += amplitude_square;
+            self.ifft_buffer[ifft_buffer_index] = amplitude_square.into();
             if ifft_buffer_index != 0 {
-                self.ifft_buffer[self.ifft_buffer.len() - ifft_buffer_index] = normalized_amplitude.into();
+                self.ifft_buffer[self.ifft_buffer.len() - ifft_buffer_index] = amplitude_square.into();
+            }
+        }
+
+        if amplitude_square_sum != 0.0 {
+            for ifft_buffer_element in &mut *self.ifft_buffer {
+                *ifft_buffer_element /= amplitude_square_sum;
             }
         }
 

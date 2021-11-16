@@ -5,6 +5,11 @@ pub fn hamming(index: u32, len: u32) -> f64 {
     0.54 - 0.46 * f64::cos(2.0 * PI * f64::from(index) / f64::from(len - 1))
 }
 
+/// Computes the value at given `index` of a Hanning window of length `len`.
+pub fn hanning(index: u32, len: u32) -> f64 {
+    0.5 - 0.5 * f64::cos(2.0 * PI * f64::from(index) / f64::from(len - 1))
+}
+
 /// Computes the values of a hamming-window FIR lowpass filter of length `len` with given `cutoff_frequency`.
 pub fn lowpass_fir_filter(len: u32, cutoff_frequency: f64, window: fn(u32, u32) -> f64) -> impl Iterator<Item = f64> + ExactSizeIterator {
     let center = f64::from(len - 1) / 2.0;

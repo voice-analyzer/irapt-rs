@@ -29,10 +29,11 @@ fn test_process_step() {
     let mut samples = (0..).map(|sample_index| f64::sin(sample_index as f64 / sample_rate * 2.0 * PI * signal_frequency) as f32);
     let mut sample_buffer = samples.by_ref().take(estimator.next_step - step_len).collect::<VecDeque<_>>();
 
+    let mut cursor = InputBufferCursor::default();
     for (step_index, expected_step) in expected_steps.enumerate() {
         sample_buffer.extend(samples.by_ref().take(step_len));
-        let harmonics = estimator.process_step(&mut sample_buffer, step_len, sample_rate).unwrap();
+        let harmonics = estimator.process_step(&sample_buffer, &mut cursor, step_len, sample_rate).unwrap();
         assert_iter_approx_eq!(harmonics, expected_step, 1e-7%, .amplitude .frequency, "step {}", step_index);
     }
-    assert!(estimator.process_step(&mut sample_buffer, step_len, sample_rate).is_none());
+    assert!(estimator.process_step(&mut sample_buffer, &mut cursor, step_len, sample_rate).is_none());
 }

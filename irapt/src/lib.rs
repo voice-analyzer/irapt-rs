@@ -35,8 +35,10 @@
 //!     let estimated_pitch = output.pitch_estimates().final_estimate();
 //!     let estimated_pitch_index = (sample_index as isize + estimated_pitch.offset) as usize;
 //!     let estimated_pitch_time = estimated_pitch_index as f64 / parameters.sample_rate;
-//!     println!("estimated pitch at {:0.3}: {}Hz with energy {}",
-//!              estimated_pitch_time, estimated_pitch.frequency, estimated_pitch.energy);
+//!     if let Some(estimated_pitch_frequency) = estimated_pitch.frequency {
+//!         println!("estimated pitch at {:0.3}: {}Hz with energy {}",
+//!                  estimated_pitch_time, estimated_pitch_frequency, estimated_pitch.energy);
+//!     }
 //!     sample_index += initial_sample_buffer_len - sample_buffer.len();
 //! }
 //! ```
@@ -46,6 +48,8 @@ extern crate alloc;
 #[macro_use]
 mod util;
 
+#[doc(hidden)]
+pub mod buffer;
 #[doc(hidden)]
 pub mod candidates;
 pub mod error;
@@ -58,11 +62,16 @@ pub mod interpolate;
 #[doc(hidden)]
 pub mod polyphase_filter;
 
-use self::candidates::{CandidateFrequencyIter, CandidateGenerator, CandidateSelectionStepIter, CandidateSelector};
+use self::buffer::{InputBufferCursor, InputBufferCursors};
+use self::candidates::{
+    CandidateFrequencyIter, CandidateGenerator, CandidateSelection, CandidateSelectionStepIter, CandidateSelector,
+    CandidateSelectionParameters, VoicingStateParameters,
+};
 use self::error::InvalidParameterError;
 use self::harmonics::HarmonicParametersEstimator;
 
 use alloc::collections::VecDeque;
+use core::array;
 use core::iter::Enumerate;
 use core::ops::RangeInclusive;
 
@@ -77,6 +86,7 @@ use core::ops::RangeInclusive;
 /// [`candidate_selection_window_duration`]: Parameters::candidate_selection_window_duration
 pub struct Irapt {
     parameters:          Parameters,
+    cursors:             InputBufferCursors<IraptInputBufferCursors>,
     estimator:           HarmonicParametersEstimator,
     candidate_generator: CandidateGenerator,
     candidate_selector:  CandidateSelector,
@@ -166,6 +176,11 @@ pub struct Parameters {
     ///
     /// [`harmonics_estimation_interval`]: Self::harmonics_estimation_interval
     pub candidate_max_jump: usize,
+
+    /// Amount of bias toward deciding that voiced speech is present as opposed to unvoiced spech or background noise.
+    ///
+    /// The suggested default is `0.0`.
+    pub voiced_bias: f64,
 }
 
 /// The output of [`Irapt::process`].
@@ -181,7 +196,7 @@ pub struct Output<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EstimatedPitch {
     /// Frequency, in Hz, of the estimated pitch.
-    pub frequency: f64,
+    pub frequency: Option<f64>,
     /// Arbitrary measure, from `0.0..`, of the energy associated with the estimated pitch.
     pub energy:    f64,
     /// The offset in samples within the input buffer (_before_ removal of consumed samples) at which the pitch was estimated. This may be
@@ -199,6 +214,14 @@ pub struct EstimatedPitchIter<'a> {
     last_step_sample_index: usize,
     step_len: usize,
 }
+
+#[derive(Default)]
+struct IraptInputBufferCursors {
+    harmonics: InputBufferCursor,
+    candidates: InputBufferCursor,
+}
+
+const VOICING_STATE_TRANSITION_WINDOW_DURATION: f64 = 0.3;
 
 impl Irapt {
     /// Constructs a new `Irapt`.
@@ -231,6 +254,7 @@ impl Irapt {
         );
         Ok(Self {
             parameters,
+            cursors: Default::default(),
             estimator,
             candidate_generator,
             candidate_selector,
@@ -272,7 +296,9 @@ impl Irapt {
     /// // Process as many samples as possible
     /// while let Some(output) = irapt.process(&mut sample_buffer) {
     ///     let estimated_pitch = output.pitch_estimates().final_estimate();
-    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    ///     if let Some(estimated_pitch_frequency) = estimated_pitch.frequency {
+    ///         println!("estimated pitch: {}Hz with energy {}", estimated_pitch_frequency, estimated_pitch.energy);
+    ///     }
     /// }
     ///
     /// // Simulate that half of a second more samples have become availoble and process them
@@ -280,17 +306,21 @@ impl Irapt {
     ///
     /// while let Some(output) = irapt.process(&mut sample_buffer) {
     ///     let estimated_pitch = output.pitch_estimates().final_estimate();
-    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    ///     if let Some(estimated_pitch_frequency) = estimated_pitch.frequency {
+    ///         println!("estimated pitch: {}Hz with energy {}", estimated_pitch_frequency, estimated_pitch.energy);
+    ///     }
     /// }
     /// ```
     pub fn process<S: Into<f64> + Copy>(&mut self, samples: &mut VecDeque<S>) -> Option<Output<'_>> {
-        let initial_samples_len = samples.len();
         let step_len = self.parameters.step_len();
+        let voicing_state_transition_window_len = self.parameters.voicing_state_transition_window_len();
+
+        let cursors = self.cursors.cursors_mut();
 
         let mut processed_step_sample_index = None;
         while let (step_sample_index, Some(harmonics)) = (
-            initial_samples_len - samples.len() + self.estimator.next_step_samples_len(),
-            self.estimator.process_step(samples, step_len, self.parameters.sample_rate),
+            self.estimator.next_step_samples_len(),
+            self.estimator.process_step(samples, &mut cursors.harmonics, step_len, self.parameters.sample_rate),
         ) {
             let mut energy = 0.0;
             let harmonics = harmonics.inspect(|harmonic| {
@@ -300,12 +330,24 @@ impl Irapt {
             self.candidate_generator.process_step_harmonics(harmonics, self.parameters.sample_rate);
             let candidates = self.candidate_generator.generate_step_candidates();
 
+            let candidate_selection_parameters = CandidateSelectionParameters {
+                max_pitch_jump: self.parameters.candidate_max_jump,
+                decay:          self.parameters.candidate_step_decay,
+                voicing_state:  VoicingStateParameters {
+                    voiced_bias: self.parameters.voiced_bias,
+                    ..Default::default()
+                },
+            };
+
             self.candidate_selector.process_step(
                 candidates,
+                &samples,
+                &mut cursors.candidates,
+                step_len,
+                voicing_state_transition_window_len,
                 energy,
                 self.parameters.candidate_selection_window_len(),
-                self.parameters.candidate_max_jump,
-                self.parameters.candidate_step_decay,
+                candidate_selection_parameters,
             );
 
             if self.candidate_selector.initialized(self.parameters.candidate_selection_window_len()) {
@@ -314,8 +356,10 @@ impl Irapt {
             }
         }
 
+        self.cursors.advance_buffer(samples);
+
         let last_step_sample_index = processed_step_sample_index?;
-        let more_output = samples.len() >= self.estimator.next_step_samples_len();
+        let more_output = samples.len() >= self.cursors.cursors_mut().harmonics.index() + self.estimator.next_step_samples_len();
 
         let selected_candidates = self.candidate_selector.best_candidate_steps(
             self.parameters.candidate_selection_window_len(),
@@ -357,7 +401,9 @@ impl Irapt {
     ///
     /// while let Some(output) = irapt.process(&mut sample_buffer) {
     ///     let estimated_pitch = output.pitch_estimates().final_estimate();
-    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    ///     if let Some(estimated_pitch_frequency) = estimated_pitch.frequency {
+    ///         println!("estimated pitch: {}Hz with energy {}", estimated_pitch_frequency, estimated_pitch.energy);
+    ///     }
     /// }
     ///
     /// // Simulate that many more samples have become available
@@ -370,7 +416,9 @@ impl Irapt {
     ///
     /// while let Some(output) = irapt.process(&mut sample_buffer) {
     ///     let estimated_pitch = output.pitch_estimates().final_estimate();
-    ///     println!("estimated pitch: {}Hz with energy {}", estimated_pitch.frequency, estimated_pitch.energy);
+    ///     if let Some(estimated_pitch_frequency) = estimated_pitch.frequency {
+    ///         println!("estimated pitch: {}Hz with energy {}", estimated_pitch_frequency, estimated_pitch.energy);
+    ///     }
     /// }
     /// ```
     pub fn reset(&mut self) {
@@ -401,6 +449,7 @@ impl Parameters {
         candidate_taper:      0.25,
         candidate_step_decay: 0.95,
         candidate_max_jump:   23,
+        voiced_bias:          0.0,
     };
 
     fn candidate_selection_window_len(&self) -> usize {
@@ -413,6 +462,10 @@ impl Parameters {
 
     fn step_len(&self) -> usize {
         (self.harmonics_estimation_interval * self.sample_rate).round() as usize
+    }
+
+    fn voicing_state_transition_window_len(&self) -> usize {
+        (VOICING_STATE_TRANSITION_WINDOW_DURATION * self.sample_rate).round() as usize
     }
 }
 
@@ -471,14 +524,25 @@ impl Iterator for EstimatedPitchIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (step_index, candidate_selection) = self.selected_candidates.next()?;
-        let frequency = (self.candidate_frequencies.clone())
-            .nth(candidate_selection.selected_candidate_index)
-            .unwrap_or_else(|| panic!("candidate index out of bounds"));
-        Some(EstimatedPitch {
-            frequency,
-            energy: candidate_selection.energy,
-            offset: self.last_step_sample_index.wrapping_sub((1 + step_index) * self.step_len) as isize
-        })
+        let offset = self.last_step_sample_index.wrapping_sub((1 + step_index) * self.step_len) as isize;
+        let pitch = match candidate_selection {
+            CandidateSelection::Unvoiced { energy } => EstimatedPitch {
+                frequency: None,
+                energy,
+                offset,
+            },
+            CandidateSelection::Voiced { selected_candidate_index, energy } => {
+                let frequency = (self.candidate_frequencies.clone())
+                    .nth(selected_candidate_index)
+                    .unwrap_or_else(|| panic!("candidate index out of bounds"));
+                EstimatedPitch {
+                    frequency: Some(frequency),
+                    energy,
+                    offset,
+                }
+            }
+        };
+        Some(pitch)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -487,3 +551,17 @@ impl Iterator for EstimatedPitchIter<'_> {
 }
 
 impl ExactSizeIterator for EstimatedPitchIter<'_> {}
+
+//
+// Irapt impls
+//
+
+impl<'a> IntoIterator for &'a mut IraptInputBufferCursors {
+    type Item = &'a mut InputBufferCursor;
+    type IntoIter = array::IntoIter<&'a mut InputBufferCursor, 2>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter::new([&mut self.harmonics, &mut self.candidates])
+    }
+
+}

@@ -1,3 +1,4 @@
+use crate::buffer::InputBufferCursor;
 use crate::polyphase_filter::PolyphaseFilter;
 
 use alloc::boxed::Box;
@@ -38,22 +39,23 @@ impl HarmonicParametersEstimator {
 
     pub fn process_step<S: Into<f64> + Copy>(
         &mut self,
-        samples: &mut VecDeque<S>,
+        samples: &VecDeque<S>,
+        cursor: &mut InputBufferCursor,
         step_len: usize,
         sample_rate: f64,
     ) -> Option<impl Iterator<Item = HarmonicParameter> + '_> {
-        if samples.len() < self.next_step {
+        if samples.len() - cursor.index() < self.next_step {
             return None;
         }
         let (head_filter_out, last_filter_out) = &mut self.channel_buffers;
-        let step = samples.range(..self.next_step).rev().map(|sample| (*sample).into());
+        let step = samples.range(cursor.index()..cursor.index() + self.next_step).rev().map(|sample| (*sample).into());
         self.filter.process(step.clone().skip(1), head_filter_out);
         self.filter.process(step, last_filter_out);
 
         self.next_step += step_len;
         if let Some(drain_len) = self.next_step.checked_sub(head_filter_out.len() * 2) {
             self.next_step -= drain_len;
-            samples.drain(..drain_len);
+            cursor.advance(drain_len);
         }
 
         let head_filter_merged = head_filter_out[..head_filter_out.len() / 2]
