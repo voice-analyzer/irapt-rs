@@ -1,0 +1,30 @@
+[package]
+name = "irapt-test-ui"
+description = "A GUI for visualizing output of the irapt crate for testing"
+version = "0.1.0"
+edition = "2018"
+
+publish = false
+license = "AGPL-3.0-only"
+
+[features]
+default = ["matplotlib-ui"]
+matplotlib-ui = ["cpython"]
+plotters-ui = ["plotters", "plotters-piston", "piston_window"]
+
+[dependencies]
+anyhow = "1.0"
+cpal = "0.13"
+cpython = { version = "0.7", optional = true }
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+env_logger = "0.9"
+itertools = { version = "0.10", default-features = false }
+irapt = { path = "../irapt" }
+log = "0.4"
+piston_window = { version = "0.120", optional = true }
+plotters = { version = "0.3", optional = true }
+plotters-piston = { git = "https://github.com/plotters-rs/plotters-piston", rev = "488a57f06c3d3fb5c6bce2aaea77dfa2d41d64fb", optional = true }
+ringbuf = "0.2"
+rubato = "0.10"
+scopeguard = "1.1"

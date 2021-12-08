@@ -1,2 +1,6 @@
 [workspace]
-members = ["irapt"]
+members = ["irapt", "irapt-test-ui"]
+
+[profile.dev]
+# irapt has unusably poor performance at opt-level=0
+opt-level = 1
